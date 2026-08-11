@@ -17,14 +17,16 @@ import {
   PANEL_PORT,
   STORAGE_HISTORY,
   STORAGE_SETTINGS,
+  directoryOf,
   kindFromContentType,
   kindFromUrl,
+  mediaKey,
 } from '../lib/constants.js';
 import { buildDownloadPath, suggestFilename } from '../lib/format.js';
 
 const OFFSCREEN_PATH = 'offscreen/offscreen.html';
 
-/** Detected media per tab: `tabId -> Map<url, MediaItem>`. */
+/** Detected media per tab: `tabId -> Map<mediaKey, MediaItem>`. */
 const mediaByTab = new Map();
 /** Live panel ports, so every open panel sees the same events. */
 const panelPorts = new Set();
@@ -58,8 +60,8 @@ async function saveSettings(patch) {
 // Detection
 // ---------------------------------------------------------------------------
 
-/** Segment URLs already covered by a playlist we know about, keyed by tab. */
-const knownSegmentPrefixes = new Map();
+/** Directories of playlists we already list, keyed by tab. */
+const knownPlaylistPrefixes = new Map();
 
 function tabMedia(tabId) {
   let media = mediaByTab.get(tabId);
@@ -71,11 +73,15 @@ function tabMedia(tabId) {
 }
 
 /**
- * Is this URL an individual HLS segment belonging to a playlist we already
- * list? Showing 4000 fragments instead of one playlist would be useless.
+ * Does this URL belong to a stream already on the list?
+ *
+ * A playlist's own directory holds its segments, its per-quality variant
+ * playlists, its audio renditions and its subtitle tracks — all of them parts
+ * of one video. Listed separately they bury the entry the user actually
+ * wants under dozens of near-identical ones.
  */
-function isKnownSegment(tabId, url) {
-  const prefixes = knownSegmentPrefixes.get(tabId);
+function isUnderKnownPlaylist(tabId, url) {
+  const prefixes = knownPlaylistPrefixes.get(tabId);
   if (!prefixes) return false;
   for (const prefix of prefixes) {
     if (url.startsWith(prefix)) return true;
@@ -83,20 +89,19 @@ function isKnownSegment(tabId, url) {
   return false;
 }
 
-/** Remember the directory a playlist lives in, so its segments stay hidden. */
+/** Remember the directory a playlist lives in, so its parts stay hidden. */
 function rememberPlaylistLocation(tabId, url) {
-  try {
-    const parsed = new URL(url);
-    const prefix = `${parsed.origin}${parsed.pathname.slice(0, parsed.pathname.lastIndexOf('/') + 1)}`;
-    let prefixes = knownSegmentPrefixes.get(tabId);
-    if (!prefixes) {
-      prefixes = new Set();
-      knownSegmentPrefixes.set(tabId, prefixes);
-    }
-    prefixes.add(prefix);
-  } catch {
-    // A URL we cannot parse simply gets no segment suppression.
+  const prefix = directoryOf(url);
+  // Unparseable, or a playlist at the host root whose directory would swallow
+  // every other file on that host. Either way, no suppression.
+  if (!prefix) return;
+
+  let prefixes = knownPlaylistPrefixes.get(tabId);
+  if (!prefixes) {
+    prefixes = new Set();
+    knownPlaylistPrefixes.set(tabId, prefixes);
   }
+  prefixes.add(prefix);
 }
 
 /** Record a detected media resource and tell any open panel about it. */
@@ -104,11 +109,15 @@ function recordMedia(tabId, item) {
   if (tabId < 0) return;
 
   const media = tabMedia(tabId);
-  const existing = media.get(item.url);
+  const key = mediaKey(item.url);
+  const existing = media.get(key);
 
   if (existing) {
     // Later observations often carry detail the first one lacked.
     Object.assign(existing, {
+      // The newest sighting carries the freshest signing token. Keeping the
+      // first one would hand the engine a URL that has since expired.
+      url: item.url,
       size: item.size ?? existing.size,
       kind: item.kind ?? existing.kind,
       referer: item.referer ?? existing.referer,
@@ -118,10 +127,10 @@ function recordMedia(tabId, item) {
     return;
   }
 
-  if (item.kind === MediaKind.TS && isKnownSegment(tabId, item.url)) return;
+  if (isUnderKnownPlaylist(tabId, item.url)) return;
   if (item.kind === MediaKind.HLS) rememberPlaylistLocation(tabId, item.url);
 
-  media.set(item.url, item);
+  media.set(key, item);
   updateBadge(tabId);
   broadcastToPanels({ type: 'media-added', tabId, item });
 }
@@ -135,7 +144,7 @@ chrome.webRequest.onSendHeaders.addListener(
       (header) => header.name.toLowerCase() === 'referer',
     )?.value;
     if (!referer) return;
-    const existing = tabMedia(details.tabId).get(details.url);
+    const existing = tabMedia(details.tabId).get(mediaKey(details.url));
     if (existing && !existing.referer) existing.referer = referer;
   },
   { urls: ['<all_urls>'] },
@@ -204,14 +213,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   mediaByTab.delete(tabId);
-  knownSegmentPrefixes.delete(tabId);
+  knownPlaylistPrefixes.delete(tabId);
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => updateBadge(tabId));
 
 function clearTab(tabId) {
   mediaByTab.delete(tabId);
-  knownSegmentPrefixes.delete(tabId);
+  knownPlaylistPrefixes.delete(tabId);
   updateBadge(tabId);
   broadcastToPanels({ type: 'tab-cleared', tabId });
 }

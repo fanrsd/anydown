@@ -9,7 +9,7 @@
  * No string is ever assigned to `innerHTML`.
  */
 
-import { JobState, PANEL_PORT, labelForKind, MediaKind } from '../lib/constants.js';
+import { JobState, PANEL_PORT, labelForKind, MediaKind, mediaKey } from '../lib/constants.js';
 import {
   formatBytes,
   formatEta,
@@ -41,13 +41,18 @@ const templates = {
   variant: document.getElementById('tpl-variant'),
 };
 
-/** Detected media for the active tab, keyed by URL. */
+/**
+ * Everything below is keyed by `mediaKey`, not by the raw URL. A signed media
+ * URL changes every time the player re-requests it, so keying on the URL
+ * itself would grow a second card for a stream already on screen.
+ */
+/** Detected media for the active tab. */
 const items = new Map();
 /** Job state mirrored from the service worker, keyed by job id. */
 const jobs = new Map();
-/** Which job belongs to which media URL, so a card can find its progress. */
-const jobIdByUrl = new Map();
-/** Rendered cards, keyed by media URL, so updates do not rebuild the list. */
+/** Which job belongs to which media, so a card can find its progress. */
+const jobIdByKey = new Map();
+/** Rendered cards, so updates do not rebuild the list. */
 const cards = new Map();
 
 let activeTabId = null;
@@ -80,11 +85,11 @@ function handleMessage(message) {
   switch (message.type) {
     case 'state':
       items.clear();
-      for (const item of message.items) items.set(item.url, item);
+      for (const item of message.items) items.set(mediaKey(item.url), item);
       jobs.clear();
       for (const job of message.jobs) {
         jobs.set(job.id, job);
-        if (job.url) jobIdByUrl.set(job.url, job.id);
+        if (job.url) jobIdByKey.set(mediaKey(job.url), job.id);
       }
       renderDetected();
       renderHistory(message.history);
@@ -93,7 +98,7 @@ function handleMessage(message) {
     case 'media-added':
     case 'media-updated':
       if (message.tabId !== activeTabId) break;
-      items.set(message.item.url, message.item);
+      items.set(mediaKey(message.item.url), message.item);
       renderDetected();
       break;
 
@@ -105,7 +110,7 @@ function handleMessage(message) {
 
     case 'job-updated':
       jobs.set(message.job.id, message.job);
-      if (message.job.url) jobIdByUrl.set(message.job.url, message.job.id);
+      if (message.job.url) jobIdByKey.set(mediaKey(message.job.url), message.job.id);
       applyJobToCard(message.job);
       updateTally();
       break;
@@ -141,20 +146,21 @@ function renderDetected() {
   const seen = new Set();
 
   for (const item of ordered) {
-    seen.add(item.url);
-    let card = cards.get(item.url);
+    const key = mediaKey(item.url);
+    seen.add(key);
+    let card = cards.get(key);
     if (!card) {
       card = buildCard(item);
-      cards.set(item.url, card);
+      cards.set(key, card);
     }
     fillCardDetails(card, item);
     elements.mediaList.append(card.root);
   }
 
-  for (const [url, card] of cards) {
-    if (seen.has(url)) continue;
+  for (const [key, card] of cards) {
+    if (seen.has(key)) continue;
     card.root.remove();
-    cards.delete(url);
+    cards.delete(key);
   }
 
   // A job started before this render still needs its progress painted.
@@ -167,7 +173,7 @@ function buildCard(item) {
 
   const card = {
     root,
-    url: item.url,
+    key: mediaKey(item.url),
     kind: root.querySelector('.kind'),
     title: root.querySelector('.card__title'),
     meta: root.querySelector('.card__meta'),
@@ -186,9 +192,13 @@ function buildCard(item) {
     ribbonCells: [],
   };
 
-  card.download.addEventListener('click', () => beginDownload(card, item));
+  // The card outlives this `item`: a re-signed URL arrives as a fresh object,
+  // so the current one is looked up rather than captured here.
+  card.download.addEventListener('click', () =>
+    beginDownload(card, items.get(card.key) ?? item),
+  );
   card.cancel.addEventListener('click', () => {
-    const jobId = jobIdByUrl.get(card.url);
+    const jobId = jobIdByKey.get(card.key);
     if (jobId) send({ type: 'cancel', jobId });
   });
 
@@ -222,7 +232,7 @@ function hostAndPath(url) {
 
 function beginDownload(card, item) {
   const jobId = crypto.randomUUID();
-  jobIdByUrl.set(item.url, jobId);
+  jobIdByKey.set(mediaKey(item.url), jobId);
   card.pendingItem = item;
   clearNote(card);
 
@@ -300,8 +310,8 @@ function showProbeFailure(jobId, error) {
 }
 
 function cardForJob(jobId) {
-  for (const [url, id] of jobIdByUrl) {
-    if (id === jobId) return cards.get(url);
+  for (const [key, id] of jobIdByKey) {
+    if (id === jobId) return cards.get(key);
   }
   return null;
 }
@@ -322,7 +332,7 @@ const STATE_LABELS = {
 };
 
 function applyJobToCard(job) {
-  const card = job.url ? cards.get(job.url) : cardForJob(job.id);
+  const card = job.url ? cards.get(mediaKey(job.url)) : cardForJob(job.id);
   if (!card) return;
 
   const running = [
