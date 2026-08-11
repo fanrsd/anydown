@@ -18,11 +18,13 @@ import {
   STORAGE_HISTORY,
   STORAGE_SETTINGS,
   directoryOf,
+  isAmbiguousContentType,
   kindFromContentType,
   kindFromUrl,
   mediaKey,
 } from '../lib/constants.js';
 import { buildDownloadPath, suggestFilename } from '../lib/format.js';
+import { isPlaylist } from '../lib/m3u8-parser.js';
 
 const OFFSCREEN_PATH = 'offscreen/offscreen.html';
 
@@ -174,6 +176,50 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: ['<all_urls>'], types: ['xmlhttprequest', 'media', 'other', 'object'] },
 );
 
+/** Media keys already sniffed, so one URL costs at most one extra request. */
+const sniffed = new Set();
+
+/** Bodies larger than this are not playlists; a playlist is small text. */
+const MAX_SNIFF_SIZE = 4 * 1024 * 1024;
+
+/**
+ * Third pass: read the first bytes of an ambiguously typed response and see
+ * whether it is really an HLS playlist.
+ *
+ * Costs one range request, only for responses whose `Content-Type` carried no
+ * information at all, and only once per stream. Failures are silent: this is
+ * an opportunistic upgrade to detection, never a requirement for it.
+ */
+async function sniffForPlaylist(tabId, url, size) {
+  if (size !== null && size > MAX_SNIFF_SIZE) return;
+
+  const key = mediaKey(url);
+  if (sniffed.has(key)) return;
+  sniffed.add(key);
+
+  try {
+    const response = await fetch(url, {
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { Range: 'bytes=0-1023' },
+    });
+    if (!response.ok) return;
+    if (!isPlaylist(await response.text())) return;
+
+    recordMedia(tabId, {
+      url,
+      kind: MediaKind.HLS,
+      size: null,
+      title: null,
+      referer: null,
+      detectedAt: Date.now(),
+      source: 'sniff',
+    });
+  } catch {
+    // Offline, CORS, or the URL already expired. Detection carries on without.
+  }
+}
+
 /** Second pass: classify by Content-Type, which catches extensionless URLs. */
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
@@ -184,15 +230,22 @@ chrome.webRequest.onHeadersReceived.addListener(
     const header = (name) =>
       headers.find((candidate) => candidate.name.toLowerCase() === name)?.value ?? null;
 
-    const kind = kindFromContentType(header('content-type')) ?? kindFromUrl(details.url);
-    if (!kind) return;
-
+    const contentType = header('content-type');
     const length = Number(header('content-length'));
+    const size = Number.isFinite(length) && length > 0 ? length : null;
+
+    const kind = kindFromContentType(contentType) ?? kindFromUrl(details.url);
+    if (!kind) {
+      // Neither the type nor the URL said anything. If the type said *nothing
+      // useful* rather than something unrelated, the body is worth a peek.
+      if (isAmbiguousContentType(contentType)) sniffForPlaylist(details.tabId, details.url, size);
+      return;
+    }
 
     recordMedia(details.tabId, {
       url: details.url,
       kind,
-      size: Number.isFinite(length) && length > 0 ? length : null,
+      size,
       title: null,
       referer: null,
       detectedAt: Date.now(),
@@ -221,6 +274,9 @@ chrome.tabs.onActivated.addListener(({ tabId }) => updateBadge(tabId));
 function clearTab(tabId) {
   mediaByTab.delete(tabId);
   knownPlaylistPrefixes.delete(tabId);
+  // ponytail: cleared for every tab, not just this one. Costs at most one
+  // repeat sniff after someone else navigates; key by tab if that ever shows.
+  sniffed.clear();
   updateBadge(tabId);
   broadcastToPanels({ type: 'tab-cleared', tabId });
 }

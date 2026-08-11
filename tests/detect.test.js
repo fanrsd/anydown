@@ -5,10 +5,12 @@ import {
   MediaKind,
   OUTPUT_EXTENSION,
   directoryOf,
+  isAmbiguousContentType,
   kindFromContentType,
   kindFromUrl,
   mediaKey,
 } from '../lib/constants.js';
+import { isPlaylist } from '../lib/m3u8-parser.js';
 
 /*
  * The two rules that decide whether a detected URL becomes its own entry in
@@ -88,4 +90,32 @@ test('Ogg video is recognised and keeps its own container', () => {
   assert.equal(kindFromUrl('https://archive.org/download/x/TheGeneral2.ogv'), MediaKind.OGG);
   assert.equal(kindFromContentType('video/ogg'), MediaKind.OGG);
   assert.equal(OUTPUT_EXTENSION[MediaKind.OGG], 'ogv');
+});
+
+/*
+ * The third detection pass. Sniffing costs a real request, so what decides
+ * whether one is spent matters more than the sniff itself.
+ */
+
+test('an uninformative Content-Type is what earns a sniff', () => {
+  for (const type of ['application/octet-stream', 'text/plain', 'application/json', '', null]) {
+    assert.ok(isAmbiguousContentType(type), `${type} should be sniffable`);
+  }
+  // Parameters must not defeat the match.
+  assert.ok(isAmbiguousContentType('text/plain; charset=utf-8'));
+});
+
+test('a type that already means something is never sniffed', () => {
+  // text/html is the one that matters: every page on every site would
+  // otherwise be fetched a second time just to look at it.
+  for (const type of ['text/html', 'video/mp4', 'image/png', 'application/x-mpegURL']) {
+    assert.ok(!isAmbiguousContentType(type), `${type} must not be sniffed`);
+  }
+});
+
+test('a playlist is recognised from its body alone', () => {
+  assert.ok(isPlaylist('#EXTM3U\n#EXT-X-VERSION:3\n'));
+  assert.ok(isPlaylist('\n  #EXTM3U\n'));
+  assert.ok(!isPlaylist('<!DOCTYPE html><html>'));
+  assert.ok(!isPlaylist(''));
 });
