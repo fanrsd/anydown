@@ -324,20 +324,19 @@ async function closeEngineIfIdle() {
 /**
  * Many CDNs reject segment requests without the originating page's Referer,
  * and `fetch` is not allowed to set that header itself. A session-scoped
- * declarativeNetRequest rule adds it, narrowed to the media host and to
- * requests the extension itself initiates, and removed when the job ends.
+ * declarativeNetRequest rule adds it to requests the extension itself
+ * initiates, and removes it when the job ends.
+ *
+ * The rule is deliberately not narrowed to the playlist's host. Segments and
+ * AES keys routinely live on a different host from the playlist that names
+ * them, and those are exactly the requests a CDN rejects for a missing
+ * Referer. `tabIds: [TAB_ID_NONE]` already confines this to our own fetches,
+ * so no page request is touched.
  *
  * @returns {Promise<number|null>} the rule id to remove later
  */
-async function addRefererRule(mediaUrl, referer) {
+async function addRefererRule(referer) {
   if (!referer) return null;
-
-  let host;
-  try {
-    host = new URL(mediaUrl).hostname;
-  } catch {
-    return null;
-  }
 
   const id = nextRuleId++;
   try {
@@ -351,7 +350,6 @@ async function addRefererRule(mediaUrl, referer) {
             requestHeaders: [{ header: 'Referer', operation: 'set', value: referer }],
           },
           condition: {
-            requestDomains: [host],
             resourceTypes: ['xmlhttprequest'],
             tabIds: [chrome.tabs.TAB_ID_NONE],
           },
@@ -482,7 +480,7 @@ async function startDownload(request) {
     return startDirectDownload({ ...request, jobId, name, settings });
   }
 
-  const ruleId = settings.sendReferer ? await addRefererRule(request.url, request.referer) : null;
+  const ruleId = settings.sendReferer ? await addRefererRule(request.referer) : null;
 
   updateJob(jobId, {
     url: request.url,
@@ -515,7 +513,7 @@ async function startDownload(request) {
 }
 
 async function startDirectDownload({ url, kind, jobId, name, settings, referer }) {
-  const ruleId = settings.sendReferer ? await addRefererRule(url, referer) : null;
+  const ruleId = settings.sendReferer ? await addRefererRule(referer) : null;
   const extension = OUTPUT_EXTENSION[kind] ?? 'mp4';
 
   updateJob(jobId, {
