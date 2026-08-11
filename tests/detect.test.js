@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { directoryOf, mediaKey } from '../lib/constants.js';
+import {
+  MediaKind,
+  OUTPUT_EXTENSION,
+  directoryOf,
+  kindFromContentType,
+  kindFromUrl,
+  mediaKey,
+} from '../lib/constants.js';
 
 /*
  * The two rules that decide whether a detected URL becomes its own entry in
@@ -73,4 +80,12 @@ test('a playlist at the host root claims nothing', () => {
   assert.equal(directoryOf('https://cdn.example.com/'), null);
   assert.equal(directoryOf('blob:https://example.com/1234'), null);
   assert.equal(directoryOf('not a url'), null);
+});
+
+test('Ogg video is recognised and keeps its own container', () => {
+  // Found while probing public archives: .ogv matched nothing at all, so the
+  // panel offered it as a generic "VIDEO" and saved it as .bin.
+  assert.equal(kindFromUrl('https://archive.org/download/x/TheGeneral2.ogv'), MediaKind.OGG);
+  assert.equal(kindFromContentType('video/ogg'), MediaKind.OGG);
+  assert.equal(OUTPUT_EXTENSION[MediaKind.OGG], 'ogv');
 });
