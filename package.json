@@ -1,0 +1,11 @@
+{
+  "name": "anydown",
+  "version": "1.0.0",
+  "description": "Chrome MV3 extension that downloads HLS/m3u8, MP4, TS and WebM video from any page.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/",
+    "icons": "node tools/make-icons.mjs"
+  }
+}
