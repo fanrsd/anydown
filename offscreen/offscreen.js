@@ -133,6 +133,12 @@ async function runJob({ jobId, url, name, variantUrl, concurrency, maxRetries })
     const failedIndices = [];
     let completed = 0;
 
+    // Which segments settled since the last report. The panel draws segment
+    // positions, not just a count, so it needs the indices rather than a
+    // total — and a pool completes them out of order.
+    let settledSinceReport = [];
+    let faultedSinceReport = [];
+
     const report = throttle(() => {
       port.postMessage({
         type: 'progress',
@@ -145,13 +151,17 @@ async function runJob({ jobId, url, name, variantUrl, concurrency, maxRetries })
         // Segment sizes vary, so scale the average so far by what is left.
         etaSeconds: estimateEta(rate, completed, work.length),
         failed: failedIndices.length,
+        settled: settledSinceReport,
+        faulted: faultedSinceReport,
       });
+      settledSinceReport = [];
+      faultedSinceReport = [];
     }, 250);
 
     // 3. Fetch, decrypt, and immediately wrap each segment in a Blob. Holding
     //    ArrayBuffers would grow the JS heap by the size of the whole video;
     //    a Blob moves the bytes into Chrome's blob store, which spills to disk.
-    const { results, errors } = await runPool(
+    const { results } = await runPool(
       work,
       async (segment) => {
         const bytes = await fetchBytes(segment.uri, {
@@ -169,14 +179,24 @@ async function runJob({ jobId, url, name, variantUrl, concurrency, maxRetries })
           : bytes;
 
         rate.add(plain.byteLength);
-        completed++;
-        report();
         return new Blob([plain]);
       },
-      { concurrency, signal },
+      {
+        concurrency,
+        signal,
+        onSettled: ({ index, ok }) => {
+          if (ok) {
+            completed++;
+            settledSinceReport.push(index);
+          } else {
+            failedIndices.push(index);
+            faultedSinceReport.push(index);
+          }
+          report();
+        },
+      },
     );
 
-    for (const index of errors.keys()) failedIndices.push(index);
     report.flush();
 
     if (results.every((blob) => !blob)) {

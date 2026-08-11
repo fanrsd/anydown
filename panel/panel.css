@@ -1,0 +1,663 @@
+/*
+ * AnyDown panel.
+ *
+ * The visual language comes from broadcast gear: a dark instrument face,
+ * hairline rules, monospaced machine data, and an amber tally light for
+ * anything in transit. Colour carries state rather than decoration —
+ * amber means bytes are moving, mint means bytes are on disk, coral means
+ * a segment was lost.
+ */
+
+/* --------------------------------------------------------------------------
+ * Tokens
+ * ----------------------------------------------------------------------- */
+
+:root {
+  color-scheme: dark light;
+
+  --ground: #0a1114;
+  --surface: #101a1e;
+  --surface-lift: #16232a;
+  --line: #1f3038;
+  --line-bright: #2c444e;
+  --cell-empty: #1b2b32;
+
+  --ink: #e9f1f3;
+  --ink-dim: #8ea4ac;
+  --ink-faint: #5b6f78;
+
+  /* Amber: the tally light. Bytes are in transit. */
+  --signal: #ffb02e;
+  --signal-soft: #2e2312;
+  /* Mint: written to disk. */
+  --locked: #46dfae;
+  --locked-soft: #10322a;
+  /* Coral: a segment was lost for good. */
+  --fault: #ff6f5c;
+  --fault-soft: #331a18;
+
+  --focus: #79d5ff;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", "Segoe UI Mono", Consolas, "Roboto Mono", ui-monospace,
+    monospace;
+
+  --gap: 12px;
+  --radius: 6px;
+  --rail: 34px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ground: #eef1f1;
+    --surface: #ffffff;
+    --surface-lift: #f5f8f8;
+    --line: #d5dee1;
+    --line-bright: #b8c7cc;
+    --cell-empty: #dde6e9;
+
+    --ink: #101c21;
+    --ink-dim: #4a616a;
+    --ink-faint: #74898f;
+
+    --signal: #a56400;
+    --signal-soft: #fdf0d8;
+    --locked: #067a5c;
+    --locked-soft: #ddf4ec;
+    --fault: #c0392b;
+    --fault-soft: #fbe5e2;
+
+    --focus: #0a6ea8;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Base
+ * ----------------------------------------------------------------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * The UA rule for [hidden] is a bare attribute selector, so any class that
+ * sets `display` outranks it and the element stays on screen. Several
+ * elements here are both flex containers and toggled by `hidden`.
+ */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* --------------------------------------------------------------------------
+ * Masthead and tab context
+ * ----------------------------------------------------------------------- */
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 14px 14px 10px;
+}
+
+.mark {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.mark__tail {
+  color: var(--ink-faint);
+  font-weight: 400;
+}
+
+.context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The tally light: lit while anything is downloading, exactly as on a camera. */
+.tally {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-bright);
+  transition: background-color 200ms ease, box-shadow 200ms ease;
+}
+
+.tally[data-live="true"] {
+  background: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-soft);
+}
+
+.context__title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------------
+ * Section tabs
+ * ----------------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 10px 14px 0;
+}
+
+.tab {
+  appearance: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  padding: 6px 10px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+
+.tab:hover {
+  color: var(--ink-dim);
+}
+
+.tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--signal);
+}
+
+.tab__count {
+  margin-left: 6px;
+  color: var(--signal);
+}
+
+/* --------------------------------------------------------------------------
+ * Views
+ * ----------------------------------------------------------------------- */
+
+.views {
+  flex: 1;
+  padding: 12px 14px 20px;
+}
+
+.stack {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty {
+  padding: 44px 8px;
+  text-align: center;
+}
+
+.empty__head {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.empty__body {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+  max-width: 26ch;
+  margin-inline: auto;
+}
+
+/* --------------------------------------------------------------------------
+ * Media card — a channel strip
+ * ----------------------------------------------------------------------- */
+
+.card {
+  display: grid;
+  grid-template-columns: var(--rail) 1fr;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.card__rail {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12px;
+  border-right: 1px solid var(--line);
+  background: var(--surface-lift);
+}
+
+.kind {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+}
+
+.kind[data-kind="hls"] {
+  color: var(--signal);
+}
+
+.kind[data-kind="mp4"],
+.kind[data-kind="webm"],
+.kind[data-kind="mkv"] {
+  color: var(--locked);
+}
+
+.card__body {
+  padding: 11px 12px 12px;
+  min-width: 0;
+}
+
+.card__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  /* Two lines is enough to identify a video; beyond that it is noise. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card__meta {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card__actions {
+  margin-top: 10px;
+}
+
+.card.is-running .card__actions,
+.card.is-done .card__actions {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
+ * Buttons
+ * ----------------------------------------------------------------------- */
+
+.button {
+  appearance: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 7px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.button--primary {
+  border: 1px solid var(--signal);
+  background: transparent;
+  color: var(--signal);
+}
+
+.button--primary:hover {
+  background: var(--signal);
+  color: var(--ground);
+}
+
+.button--ghost {
+  border: 1px solid var(--line-bright);
+  background: transparent;
+  color: var(--ink-dim);
+  padding: 5px 10px;
+}
+
+.button--ghost:hover {
+  border-color: var(--ink-faint);
+  color: var(--ink);
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.icon-button:hover {
+  color: var(--ink);
+  background: var(--surface-lift);
+}
+
+.icon-button--tight {
+  width: 20px;
+  height: 20px;
+}
+
+.icon-button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+/* --------------------------------------------------------------------------
+ * Quality picker
+ * ----------------------------------------------------------------------- */
+
+.picker {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+
+.picker__label {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.variant {
+  display: grid;
+  grid-template-columns: 3.5rem 5rem 1fr;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.variant:hover {
+  background: var(--surface-lift);
+  border-color: var(--line-bright);
+  color: var(--ink);
+}
+
+.variant__height {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.variant__codec {
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+ * Running state
+ * ----------------------------------------------------------------------- */
+
+.run {
+  margin-top: 10px;
+}
+
+.run__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.run__state {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--signal);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run__pct {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.run__stats {
+  display: flex;
+  gap: 10px;
+  margin: 5px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+
+.card.is-done .run__state {
+  color: var(--locked);
+}
+
+.card.is-failed .run__state,
+.card.is-cancelled .run__state {
+  color: var(--fault);
+}
+
+.card.is-done .run__stats,
+.card.is-failed .run__stats {
+  display: none;
+}
+
+.card.is-done .js-cancel,
+.card.is-failed .js-cancel,
+.card.is-cancelled .js-cancel {
+  display: none;
+}
+
+/*
+ * Notes carry their meaning in the tint and the hairline, matching the cards
+ * and rows around them rather than growing an accent rail of their own.
+ */
+.note {
+  margin: 8px 0 0;
+  padding: 7px 9px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklab, var(--fault) 45%, transparent);
+  background: var(--fault-soft);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.note[data-tone="warn"] {
+  border-color: color-mix(in oklab, var(--signal) 45%, transparent);
+  background: var(--signal-soft);
+}
+
+/* --------------------------------------------------------------------------
+ * Segment ribbon — the signature element
+ *
+ * One cell per group of segments, filling as each lands. A parallel pool
+ * finishes out of order, so cells light up scattered rather than sweeping
+ * left to right. Lost segments stay coral, which is both an honest report
+ * and a map of where the file will glitch.
+ * ----------------------------------------------------------------------- */
+
+.ribbon {
+  grid-column: 1 / -1;
+  display: flex;
+  height: 7px;
+  border-top: 1px solid var(--line);
+}
+
+/*
+ * Four flat states, no blending. An earlier version mixed fill amount into
+ * the cell colour, which turned a half-done amber cell and a coral fault
+ * into the same muddy tan. A cell is only briefly part-done, so spending a
+ * whole visual dimension on it cost far more than it told anyone.
+ *
+ * There is no gap between cells either: adjacent cells of the same state
+ * merge into one bar, which is what makes contiguous runs readable and
+ * leaves a lone in-flight cell standing out.
+ */
+.ribbon__cell {
+  flex: 1;
+  background: var(--cell-empty);
+  transition: background-color 220ms ease;
+}
+
+.ribbon__cell[data-state="active"] {
+  background: var(--signal);
+}
+
+.ribbon__cell[data-state="done"] {
+  background: var(--locked);
+}
+
+.ribbon__cell[data-state="fault"] {
+  background: var(--fault);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ribbon__cell,
+  .tally,
+  .button,
+  .tab,
+  .variant,
+  .icon-button {
+    transition: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * History
+ * ----------------------------------------------------------------------- */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.row__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.row__title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row__meta {
+  margin: 3px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+
+.row__warn {
+  color: var(--fault);
+}
+
+.row__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.history-foot {
+  margin-top: 14px;
+  display: flex;
+  justify-content: center;
+}

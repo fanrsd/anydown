@@ -402,6 +402,65 @@ function updateJob(jobId, patch) {
 }
 
 /**
+ * Cells in the panel's segment ribbon. A stream can have thousands of
+ * segments and the panel is 380px wide, so segments are grouped into cells.
+ */
+const RIBBON_CELLS = 48;
+
+/** Which ribbon cell a segment index belongs to. */
+function cellFor(index, total, cells) {
+  return Math.min(cells - 1, Math.floor((index * cells) / total));
+}
+
+/**
+ * How many segment indices land in each cell under {@link cellFor}.
+ *
+ * This has to be the exact inverse of `cellFor`, not merely close to it.
+ * The obvious `floor((cell + 1) * total / cells) - floor(cell * total / cells)`
+ * is not: with 1140 segments over 48 cells it puts index 23 in cell 0 while
+ * claiming cell 0 holds 23 indices, so some cells overfill and their
+ * neighbours never reach capacity — leaving cells stuck on the amber
+ * "in flight" state for the whole download.
+ *
+ * The first index in cell c is ceil(c * total / cells), written with integer
+ * arithmetic so no rounding can creep in.
+ */
+function ribbonCapacity(total, cells) {
+  const firstIndexIn = (cell) => Math.floor((cell * total + cells - 1) / cells);
+  return Array.from({ length: cells }, (_, cell) => firstIndexIn(cell + 1) - firstIndexIn(cell));
+}
+
+/**
+ * Fold settled segment indices into per-cell counts.
+ *
+ * The engine reports indices rather than a running total because the panel
+ * draws *where* progress happened, and a concurrent pool finishes segments
+ * out of order. Accumulating here rather than in the panel means a panel
+ * opened halfway through a download still sees the true picture.
+ */
+function foldIntoRibbon(job, message) {
+  const total = message.total ?? 0;
+  if (total <= 0) return null;
+
+  const cells = Math.min(total, RIBBON_CELLS);
+  const ribbon = job.ribbon?.cells === cells
+    ? job.ribbon
+    : {
+        cells,
+        // How many segments each cell stands for, so a cell only turns mint
+        // once every segment behind it has actually landed.
+        capacity: ribbonCapacity(total, cells),
+        done: new Array(cells).fill(0),
+        faulted: new Array(cells).fill(0),
+      };
+
+  for (const index of message.settled ?? []) ribbon.done[cellFor(index, total, cells)]++;
+  for (const index of message.faulted ?? []) ribbon.faulted[cellFor(index, total, cells)]++;
+
+  return ribbon;
+}
+
+/**
  * Start a download. Direct files go to `chrome.downloads`, which handles
  * ranges and resume natively; HLS goes to the offscreen engine.
  */
@@ -593,7 +652,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
 async function handleEngineMessage(message) {
   switch (message.type) {
-    case 'progress':
+    case 'progress': {
+      const job = jobs.get(message.jobId) ?? {};
       updateJob(message.jobId, {
         state: message.state ?? JobState.DOWNLOADING,
         completed: message.completed,
@@ -602,8 +662,10 @@ async function handleEngineMessage(message) {
         bytesPerSecond: message.bytesPerSecond,
         etaSeconds: message.etaSeconds,
         failed: message.failed,
+        ribbon: foldIntoRibbon(job, message) ?? job.ribbon,
       });
       break;
+    }
 
     case 'variants':
       updateJob(message.jobId, { state: JobState.PROBING, variants: message.variants });

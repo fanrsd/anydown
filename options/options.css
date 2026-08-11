@@ -1,0 +1,191 @@
+/*
+ * Options page. Inherits every token and the button, mark and note styles
+ * from panel.css so the two surfaces cannot drift apart; only the wider
+ * layout and the form controls are defined here.
+ */
+
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 40px 28px 64px;
+}
+
+.page__head {
+  padding-bottom: 18px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--line);
+}
+
+.page__sub {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.field {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.field__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field__label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.field__value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--signal);
+}
+
+.field__help {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-dim);
+  max-width: 52ch;
+}
+
+/* --------------------------------------------------------------------------
+ * Controls
+ * ----------------------------------------------------------------------- */
+
+.slider {
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  margin: 10px 0 0;
+  background: none;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--cell-empty);
+}
+
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--signal);
+}
+
+.slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--signal-soft);
+}
+
+.text-input {
+  width: 100%;
+  max-width: 22rem;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-bright);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.text-input:focus {
+  border-color: var(--signal);
+  outline: none;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.switch input {
+  appearance: none;
+  flex: none;
+  width: 34px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--line-bright);
+  border-radius: 9px;
+  background: var(--cell-empty);
+  position: relative;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.switch input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  transition: transform 160ms ease, background-color 160ms ease;
+}
+
+.switch input:checked {
+  background: var(--signal-soft);
+  border-color: var(--signal);
+}
+
+.switch input:checked::after {
+  transform: translateX(16px);
+  background: var(--signal);
+}
+
+.switch__label {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.field--switch .field__help {
+  margin-left: 44px;
+}
+
+/* --------------------------------------------------------------------------
+ * Footer
+ * ----------------------------------------------------------------------- */
+
+.page__foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 24px;
+}
+
+.saved {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--locked);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch input,
+  .switch input::after {
+    transition: none;
+  }
+}

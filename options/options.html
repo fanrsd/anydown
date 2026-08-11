@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AnyDown settings</title>
+    <link rel="stylesheet" href="../panel/panel.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="page__head">
+        <h1 class="mark">Any<span class="mark__tail">Down</span></h1>
+        <p class="page__sub">Settings</p>
+      </header>
+
+      <section class="field">
+        <div class="field__head">
+          <label class="field__label" for="concurrency">Parallel segments</label>
+          <output class="field__value" id="concurrency-value" for="concurrency">6</output>
+        </div>
+        <input class="slider" type="range" id="concurrency" min="2" max="16" step="1" />
+        <p class="field__help">
+          How many segments AnyDown fetches at once. Higher is faster on a good connection.
+          Raise it too far and some servers start refusing requests.
+        </p>
+      </section>
+
+      <section class="field">
+        <div class="field__head">
+          <label class="field__label" for="retries">Retries per segment</label>
+          <output class="field__value" id="retries-value" for="retries">3</output>
+        </div>
+        <input class="slider" type="range" id="retries" min="0" max="8" step="1" />
+        <p class="field__help">
+          A segment that still fails after this many attempts is skipped. The download
+          finishes and the file is marked as having gaps.
+        </p>
+      </section>
+
+      <section class="field">
+        <label class="field__label" for="subfolder">Save into</label>
+        <input class="text-input" type="text" id="subfolder" spellcheck="false" placeholder="AnyDown" />
+        <p class="field__help">
+          A folder inside your browser's download directory. Leave it empty to save
+          alongside everything else.
+        </p>
+      </section>
+
+      <section class="field field--switch">
+        <label class="switch">
+          <input type="checkbox" id="save-as" />
+          <span class="switch__label">Ask where to save each file</span>
+        </label>
+        <p class="field__help">Shows the browser's own save dialog for every download.</p>
+      </section>
+
+      <section class="field field--switch">
+        <label class="switch">
+          <input type="checkbox" id="send-referer" />
+          <span class="switch__label">Send the page address with segment requests</span>
+        </label>
+        <p class="field__help">
+          Many streaming servers reject requests that do not name the page they came from.
+          Turn this off if you would rather not send it.
+        </p>
+      </section>
+
+      <footer class="page__foot">
+        <p class="saved" id="saved" hidden>Saved</p>
+        <button class="button button--ghost" type="button" id="clear-history">Clear download history</button>
+      </footer>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

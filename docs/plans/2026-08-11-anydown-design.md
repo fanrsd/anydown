@@ -137,19 +137,60 @@ and its writable stream would die with the panel.
 
 ## 7. UI
 
-Side panel, roughly 380 px wide, dark theme by default following
-`prefers-color-scheme`, with a blue→violet gradient on primary actions and progress
-fills. Two tabs: **Detected** and **History**.
+Side panel, roughly 380 px wide, following `prefers-color-scheme` in both directions.
 
-Detected items render as cards: a colour-coded type badge (HLS violet, MP4 blue, TS
-teal), the title, a metadata line (resolution, duration, size when known), and a download
-button. Choosing an HLS item expands an inline quality picker. An active download
-replaces the button with an inline progress bar showing percent, speed, ETA, and a cancel
-control.
+**Visual direction.** The reference points are broadcast instruments rather than a
+generic download manager: a dark slate-cyan face, hairline rules, and monospaced machine
+data with tabular numerals for everything the machine produced (byte counts, bitrates,
+segment indices). A humanist UI sans carries names and prose; the mono face carries data
+and the wide-tracked uppercase micro-labels. There is no gradient anywhere.
+
+**Colour carries state, not decoration.** Amber is the tally light — bytes are in
+transit. Mint means bytes are on disk. Coral means a segment was lost for good. Those
+three are the entire accent palette, and each appears only when its state is true.
+
+> An earlier draft of this section specified a blue→violet gradient on primary actions.
+> That is the default any project gets rather than a choice this one earns, and it says
+> nothing about what the extension does. Replaced by the palette above.
+
+**Signature element: the segment ribbon.** Progress is not a bar. It is a strip of
+discrete cells along the foot of each card, one per group of segments. A cell is in
+exactly one of four states: empty, amber for the working frontier, mint for on disk, and
+coral for a segment that failed every retry.
+
+Coral is the reason this is a ribbon rather than a bar. A failed segment keeps its
+position for the rest of the download, so a file that finishes with gaps carries a map of
+where in the video they fall — something a percentage cannot express. The ribbon is a
+segment integrity map first and a progress indicator second.
+
+> A draft of this section claimed cells "light scattered across the strip" and sold that
+> as showing off parallelism. That is not what the code does: `runPool` dispatches
+> segments in index order from a shared cursor, so the ribbon fills left to right with a
+> frontier only as wide as the concurrency setting. Claim corrected rather than the
+> implementation changed — in-order dispatch is what makes ordered assembly cheap.
+
+Drawing real positions means the engine reports *which* segment indices settled, not just
+how many. The service worker folds those indices into per-cell counts so a panel opened
+halfway through a download still shows the true picture.
+
+An earlier build encoded each cell's fill *amount* into its colour as well as its state,
+via `color-mix`. On screen a half-filled amber cell and a coral fault became the same
+muddy tan, and the strip read as noise. Four flat states, and no gap between cells so
+contiguous runs merge into one bar, fixed it.
+
+**Layout.** Each detected item is a channel strip: a left rail carrying the vertical type
+label, then title, a mono metadata line, and a download action; the ribbon spans the full
+card width at its foot. Choosing an HLS item expands an inline quality picker of mono
+rows. A running download replaces the action with state, percent, segment count, speed
+and ETA, plus cancel.
 
 History lists completed downloads newest first with size, timestamp, a "show in folder"
 action (`chrome.downloads.show`), and a remove-from-list action that does not touch the
 file.
+
+**Copy.** Actions keep one name through the flow: Download → Downloading → Downloaded.
+Errors say what happened and what to do about it; empty states invite an action rather
+than setting a mood.
 
 ## 8. Repository layout
 
