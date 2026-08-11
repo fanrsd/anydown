@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AnyDown engine</title>
+  </head>
+  <body>
+    <!--
+      Never visible. This document exists because MV3 service workers are
+      terminated while idle and cannot call URL.createObjectURL, so the
+      segment pool and the final Blob assembly have to live somewhere with a
+      full DOM environment and a longer lifetime.
+    -->
+    <script type="module" src="offscreen.js"></script>
+  </body>
+</html>
