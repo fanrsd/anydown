@@ -102,6 +102,12 @@ function handleMessage(message) {
       renderDetected();
       break;
 
+    case 'media-removed':
+      if (message.tabId !== activeTabId) break;
+      items.delete(message.key);
+      renderDetected();
+      break;
+
     case 'tab-cleared':
       if (message.tabId !== activeTabId) break;
       items.clear();
@@ -246,7 +252,7 @@ function beginDownload(card, item) {
   card.pct.textContent = '';
   card.run.hidden = false;
   card.root.classList.add('is-running');
-  send({ type: 'probe', jobId, url: item.url });
+  send({ type: 'probe', jobId, url: item.url, referer: item.referer });
 }
 
 function startJob(jobId, item, variantUrl) {

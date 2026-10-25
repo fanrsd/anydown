@@ -38,6 +38,31 @@ test('different paths stay different entries', () => {
   );
 });
 
+/*
+ * A site that proxies every media file through one endpoint puts the identity
+ * in the query. Dropping it collapsed a playlist and all of its segments into
+ * one entry, whose kind became whatever arrived last — and a playlist typed as
+ * a segment is saved as a text file with a video extension.
+ */
+test('a proxy endpoint is identified by its query, not its path alone', () => {
+  const playlist = 'https://site.example/api/stream?file=master.m3u8';
+  const segment = 'https://site.example/api/stream?file=seg-0001.ts';
+
+  assert.notEqual(mediaKey(playlist), mediaKey(segment));
+});
+
+test('the query still drops once the path names the file', () => {
+  // Otherwise every re-signed CDN URL becomes a new entry again.
+  assert.equal(
+    mediaKey('https://cdn.example.com/v/master.m3u8?token=aaa'),
+    mediaKey('https://cdn.example.com/v/master.m3u8?token=bbb'),
+  );
+  assert.equal(
+    mediaKey('https://cdn.example.com/v/movie.mp4?expires=1'),
+    'https://cdn.example.com/v/movie.mp4',
+  );
+});
+
 test('a URL that will not parse still yields a stable key', () => {
   assert.equal(mediaKey('not a url'), 'not a url');
   assert.equal(mediaKey('not a url'), mediaKey('not a url'));

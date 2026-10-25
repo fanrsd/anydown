@@ -17,6 +17,24 @@ function isDownloadable(url) {
   return typeof url === 'string' && /^https?:/i.test(url);
 }
 
+/**
+ * MissAV never exposes its playlist in the DOM and only requests it once
+ * playback starts. The video's surrit.com id sits in an inline script just
+ * before the word `seek`, so the playlist can be offered before play.
+ * Same anchor as https://sleazyfork.org/scripts/528160.
+ */
+const MISSAV_HOST = /(^|\.)missav\d*\.[a-z]+$/i;
+const SURRIT_ID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}).{0,4}seek/i;
+
+function missavPlaylist() {
+  if (!MISSAV_HOST.test(location.hostname)) return null;
+  for (const script of document.querySelectorAll('script:not([src])')) {
+    const id = SURRIT_ID.exec(script.textContent)?.[1];
+    if (id) return `https://surrit.com/${id.toLowerCase()}/playlist.m3u8`;
+  }
+  return null;
+}
+
 /** Collect candidate media URLs from video and source elements. */
 function collectMediaUrls() {
   const urls = new Set();
@@ -33,6 +51,9 @@ function collectMediaUrls() {
   for (const source of document.querySelectorAll('source[type^="video"], source[type*="mpegurl"]')) {
     if (isDownloadable(source.src)) urls.add(source.src);
   }
+
+  const playlist = missavPlaylist();
+  if (playlist) urls.add(playlist);
 
   return [...urls];
 }

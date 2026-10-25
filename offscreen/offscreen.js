@@ -23,7 +23,8 @@ import {
   runPool,
   throttle,
 } from '../lib/downloader.js';
-import { parsePlaylist } from '../lib/m3u8-parser.js';
+import { parsePlaylist, segmentsOf, separateAudioUri } from '../lib/m3u8-parser.js';
+import { muxToMp4 } from '../lib/mux.js';
 
 const port = chrome.runtime.connect({ name: ENGINE_PORT });
 
@@ -99,16 +100,21 @@ async function runJob({ jobId, url, name, variantUrl, concurrency, maxRetries })
   activeJobs.set(jobId, { controller });
 
   try {
-    // 1. Resolve the playlist, following a master playlist to the chosen variant.
-    let playlistUrl = variantUrl || url;
-    let playlist = parsePlaylist(await fetchText(playlistUrl, { retries: 2, signal }), playlistUrl);
+    // 1. Resolve the playlist. The master is read even when a variant was
+    //    already chosen: it is the only place audio renditions are listed.
+    let playlist = parsePlaylist(await fetchText(url, { retries: 2, signal }), url);
+    let audioUri = null;
 
     if (playlist.type === 'master') {
       if (playlist.drm.protected) throw new Error(capitalise(playlist.drm.reason));
       if (playlist.variants.length === 0) throw new Error('Master playlist lists no streams');
+
       // No explicit choice: take the best available.
-      playlistUrl = playlist.variants[0].uri;
-      playlist = parsePlaylist(await fetchText(playlistUrl, { retries: 2, signal }), playlistUrl);
+      const variant =
+        playlist.variants.find((candidate) => candidate.uri === variantUrl) ??
+        playlist.variants[0];
+      audioUri = separateAudioUri(playlist, variant);
+      playlist = parsePlaylist(await fetchText(variant.uri, { retries: 2, signal }), variant.uri);
     }
 
     if (playlist.type !== 'media') throw new Error('Playlist contains no segments');
@@ -118,12 +124,21 @@ async function runJob({ jobId, url, name, variantUrl, concurrency, maxRetries })
     }
     if (playlist.segments.length === 0) throw new Error('Playlist contains no segments');
 
-    // 2. Build the work list, putting any fMP4 init segment first.
-    const work = [];
-    if (playlist.initSegment) {
-      work.push({ ...playlist.initSegment, sequence: playlist.mediaSequence, isInit: true });
+    // 2. Build the work list. Separate audio is appended to it rather than
+    //    fetched afterwards, so one pool covers both streams and the progress
+    //    ribbon still spans the whole job.
+    const work = segmentsOf(playlist);
+    const videoCount = work.length;
+
+    let audioPlaylist = null;
+    if (audioUri) {
+      audioPlaylist = parsePlaylist(await fetchText(audioUri, { retries: 2, signal }), audioUri);
+      if (audioPlaylist.drm.protected) throw new Error(capitalise(audioPlaylist.drm.reason));
+      if (audioPlaylist.type !== 'media' || audioPlaylist.segments.length === 0) {
+        throw new Error('The audio rendition lists no segments');
+      }
+      work.push(...segmentsOf(audioPlaylist));
     }
-    work.push(...playlist.segments);
 
     const keyCache = new KeyCache((keyUri) =>
       fetchBytes(keyUri, { retries: maxRetries, signal }),
@@ -214,18 +229,70 @@ async function runJob({ jobId, url, name, variantUrl, concurrency, maxRetries })
       failed: failedIndices.length,
     });
 
-    const present = results.filter(Boolean);
-    const file = new Blob(present, { type: 'video/mp2t' });
-    const objectUrl = URL.createObjectURL(file);
+    const videoParts = results.slice(0, videoCount).filter(Boolean);
+    const audioParts = audioPlaylist ? results.slice(videoCount).filter(Boolean) : [];
+
+    // Video and audio arrived as two independent streams. Both fragmented MP4
+    // means they can be described as two tracks of one container; MPEG-TS
+    // carries its own framing and would need a demuxer we do not ship, so
+    // those are saved side by side rather than silently losing the sound.
+    const canMux = audioPlaylist != null && Boolean(playlist.initSegment && audioPlaylist.initSegment);
+
+    if (canMux) {
+      port.postMessage({ type: 'progress', jobId, state: JobState.ASSEMBLING, muxing: true });
+      try {
+        const merged = await muxToMp4(
+          globalThis.MP4Box,
+          new Uint8Array(await new Blob(videoParts).arrayBuffer()),
+          new Uint8Array(await new Blob(audioParts).arrayBuffer()),
+        );
+        const file = new Blob([merged], { type: 'video/mp4' });
+        const objectUrl = URL.createObjectURL(file);
+        heldObjectUrls.add(objectUrl);
+
+        port.postMessage({
+          type: 'assembled',
+          jobId,
+          name,
+          objectUrl,
+          bytes: file.size,
+          missing: failedIndices,
+          extension: 'mp4',
+          audio: null,
+        });
+        return;
+      } catch (error) {
+        // An unexpected codec or a truncated stream. Two playable files beat
+        // one broken one, so fall through rather than failing the job.
+        console.warn('AnyDown: muxing failed, saving audio separately:', error);
+      }
+    }
+
+    const video = new Blob(videoParts, { type: 'video/mp2t' });
+    const objectUrl = URL.createObjectURL(video);
     heldObjectUrls.add(objectUrl);
+
+    let audio = null;
+    if (audioPlaylist) {
+      const bytes = new Blob(audioParts, { type: 'audio/mp4' });
+      const audioObjectUrl = URL.createObjectURL(bytes);
+      heldObjectUrls.add(audioObjectUrl);
+      audio = {
+        objectUrl: audioObjectUrl,
+        bytes: bytes.size,
+        extension: audioPlaylist.initSegment ? 'm4a' : 'aac',
+      };
+    }
 
     port.postMessage({
       type: 'assembled',
       jobId,
       name,
       objectUrl,
-      bytes: file.size,
+      bytes: video.size,
       missing: failedIndices,
+      extension: playlist.initSegment ? 'mp4' : null,
+      audio,
     });
   } catch (error) {
     if (isAbort(error)) port.postMessage({ type: 'cancelled', jobId });

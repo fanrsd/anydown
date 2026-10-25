@@ -75,6 +75,23 @@ function tabMedia(tabId) {
 }
 
 /**
+ * Requests made by a page's own service worker, or by a frame Chrome cannot
+ * attribute, arrive with `tabId` -1. They still belong to whatever the user
+ * is looking at, so fall back to the active tab instead of dropping them.
+ */
+let activeTabId = -1;
+chrome.tabs
+  .query({ active: true, lastFocusedWindow: true })
+  .then(([tab]) => {
+    if (tab) activeTabId = tab.id;
+  })
+  .catch(() => {});
+
+function resolveTabId(details) {
+  return details.tabId >= 0 ? details.tabId : activeTabId;
+}
+
+/**
  * Does this URL belong to a stream already on the list?
  *
  * A playlist's own directory holds its segments, its per-quality variant
@@ -91,11 +108,40 @@ function isUnderKnownPlaylist(tabId, url) {
   return false;
 }
 
-/** Remember the directory a playlist lives in, so its parts stay hidden. */
+/**
+ * Endpoints that served a playlist: `tabId -> Set<origin + pathname>`.
+ *
+ * Sites that proxy media through one path have no directory to suppress by —
+ * `directoryOf` refuses a path like `/s`, and rightly so, since its directory
+ * is the host root. The endpoint itself is the unit that works there.
+ */
+const knownPlaylistEndpoints = new Map();
+
+/** Origin and path with the query dropped, or null when unparseable. */
+function endpointOf(url) {
+  try {
+    const { origin, pathname } = new URL(url);
+    return origin + pathname;
+  } catch {
+    return null;
+  }
+}
+
+/** Remember where a playlist came from, so its parts stay hidden. */
 function rememberPlaylistLocation(tabId, url) {
+  const endpoint = endpointOf(url);
+  if (endpoint) {
+    let endpoints = knownPlaylistEndpoints.get(tabId);
+    if (!endpoints) {
+      endpoints = new Set();
+      knownPlaylistEndpoints.set(tabId, endpoints);
+    }
+    endpoints.add(endpoint);
+  }
+
   const prefix = directoryOf(url);
   // Unparseable, or a playlist at the host root whose directory would swallow
-  // every other file on that host. Either way, no suppression.
+  // every other file on that host. Either way, no directory suppression.
   if (!prefix) return;
 
   let prefixes = knownPlaylistPrefixes.get(tabId);
@@ -104,6 +150,34 @@ function rememberPlaylistLocation(tabId, url) {
     knownPlaylistPrefixes.set(tabId, prefixes);
   }
   prefixes.add(prefix);
+}
+
+/**
+ * A non-playlist arriving from an endpoint that already served a playlist is
+ * one of that playlist's segments. Listing it separately buries the entry the
+ * user wants under one row per segment.
+ */
+function isSegmentOfKnownPlaylist(tabId, item) {
+  if (item.kind === MediaKind.HLS) return false;
+  const endpoint = endpointOf(item.url);
+  return endpoint != null && (knownPlaylistEndpoints.get(tabId)?.has(endpoint) ?? false);
+}
+
+/**
+ * Remove already-listed segments that belong to a playlist just discovered on
+ * the same endpoint. Detection order is not ours to control: a segment seen
+ * before its playlist earns a row that turns out to be part of another entry.
+ */
+function dropSegmentsOf(tabId, media, playlistUrl) {
+  const endpoint = endpointOf(playlistUrl);
+  if (!endpoint) return;
+
+  for (const [key, listed] of media) {
+    if (listed.kind === MediaKind.HLS) continue;
+    if (endpointOf(listed.url) !== endpoint) continue;
+    media.delete(key);
+    broadcastToPanels({ type: 'media-removed', tabId, key });
+  }
 }
 
 /** Record a detected media resource and tell any open panel about it. */
@@ -115,13 +189,20 @@ function recordMedia(tabId, item) {
   const existing = media.get(key);
 
   if (existing) {
+    // Once a key is known to be a playlist, a later sighting typed as a plain
+    // segment must not take it over: its URL and kind together would send the
+    // text file down the direct-download path and save it as if it were the
+    // video.
+    const downgrade =
+      existing.kind === MediaKind.HLS && item.kind != null && item.kind !== MediaKind.HLS;
+
     // Later observations often carry detail the first one lacked.
     Object.assign(existing, {
       // The newest sighting carries the freshest signing token. Keeping the
       // first one would hand the engine a URL that has since expired.
-      url: item.url,
+      url: downgrade ? existing.url : item.url,
       size: item.size ?? existing.size,
-      kind: item.kind ?? existing.kind,
+      kind: downgrade ? MediaKind.HLS : (item.kind ?? existing.kind),
       referer: item.referer ?? existing.referer,
       title: existing.title || item.title,
     });
@@ -130,7 +211,13 @@ function recordMedia(tabId, item) {
   }
 
   if (isUnderKnownPlaylist(tabId, item.url)) return;
-  if (item.kind === MediaKind.HLS) rememberPlaylistLocation(tabId, item.url);
+  if (isSegmentOfKnownPlaylist(tabId, item)) return;
+  if (item.kind === MediaKind.HLS) {
+    rememberPlaylistLocation(tabId, item.url);
+    // The panel is often opened mid-playback, so segments from this endpoint
+    // may already be listed. They are parts of what we just found.
+    dropSegmentsOf(tabId, media, item.url);
+  }
 
   media.set(key, item);
   updateBadge(tabId);
@@ -140,13 +227,14 @@ function recordMedia(tabId, item) {
 /** Requests whose Referer is worth keeping for later segment fetches. */
 chrome.webRequest.onSendHeaders.addListener(
   (details) => {
-    if (details.tabId < 0) return;
+    const tabId = resolveTabId(details);
+    if (tabId < 0) return;
     if (!kindFromUrl(details.url)) return;
     const referer = details.requestHeaders?.find(
       (header) => header.name.toLowerCase() === 'referer',
     )?.value;
     if (!referer) return;
-    const existing = tabMedia(details.tabId).get(mediaKey(details.url));
+    const existing = tabMedia(tabId).get(mediaKey(details.url));
     if (existing && !existing.referer) existing.referer = referer;
   },
   { urls: ['<all_urls>'] },
@@ -156,14 +244,15 @@ chrome.webRequest.onSendHeaders.addListener(
 /** First pass: classify by URL, which catches most streaming CDNs. */
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (details.tabId < 0) return;
+    const tabId = resolveTabId(details);
+    if (tabId < 0) return;
     // Our own segment fetches must not feed back into the detected list.
     if (details.initiator?.startsWith('chrome-extension://')) return;
 
     const kind = kindFromUrl(details.url);
     if (!kind) return;
 
-    recordMedia(details.tabId, {
+    recordMedia(tabId, {
       url: details.url,
       kind,
       size: null,
@@ -173,7 +262,10 @@ chrome.webRequest.onBeforeRequest.addListener(
       source: 'network',
     });
   },
-  { urls: ['<all_urls>'], types: ['xmlhttprequest', 'media', 'other', 'object'] },
+  // No `types` filter: classification below already rejects everything that is
+  // not media, and a filter only hides players that fetch under an unexpected
+  // resource type.
+  { urls: ['<all_urls>'] },
 );
 
 /** Media keys already sniffed, so one URL costs at most one extra request. */
@@ -187,23 +279,30 @@ const MAX_SNIFF_SIZE = 4 * 1024 * 1024;
  * whether it is really an HLS playlist.
  *
  * Costs one range request, only for responses whose `Content-Type` carried no
- * information at all, and only once per stream. Failures are silent: this is
- * an opportunistic upgrade to detection, never a requirement for it.
+ * information at all, and only once per stream.
+ *
+ * The page's own Referer is injected for the duration: CDNs that gate on it
+ * answer 403 to a bare fetch, which used to make this pass silently useless
+ * on exactly the sites that need it most.
  */
-async function sniffForPlaylist(tabId, url, size) {
+async function sniffForPlaylist(tabId, url, size, referer) {
   if (size !== null && size > MAX_SNIFF_SIZE) return;
 
   const key = mediaKey(url);
   if (sniffed.has(key)) return;
   sniffed.add(key);
 
+  const ruleId = await addRefererRule(referer);
   try {
     const response = await fetch(url, {
       credentials: 'include',
       cache: 'no-store',
       headers: { Range: 'bytes=0-1023' },
     });
-    if (!response.ok) return;
+    if (!response.ok) {
+      console.warn(`AnyDown: sniff of ${url} returned HTTP ${response.status}`);
+      return;
+    }
     if (!isPlaylist(await response.text())) return;
 
     recordMedia(tabId, {
@@ -211,19 +310,24 @@ async function sniffForPlaylist(tabId, url, size) {
       kind: MediaKind.HLS,
       size: null,
       title: null,
-      referer: null,
+      referer: referer ?? null,
       detectedAt: Date.now(),
       source: 'sniff',
     });
-  } catch {
-    // Offline, CORS, or the URL already expired. Detection carries on without.
+  } catch (error) {
+    // Offline, CORS, or the URL already expired. Detection carries on without
+    // it, but a zero-result page should not be a mystery.
+    console.warn(`AnyDown: sniff of ${url} failed:`, error);
+  } finally {
+    await removeRefererRule(ruleId);
   }
 }
 
 /** Second pass: classify by Content-Type, which catches extensionless URLs. */
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
-    if (details.tabId < 0) return;
+    const tabId = resolveTabId(details);
+    if (tabId < 0) return;
     if (details.initiator?.startsWith('chrome-extension://')) return;
 
     const headers = details.responseHeaders ?? [];
@@ -234,25 +338,28 @@ chrome.webRequest.onHeadersReceived.addListener(
     const length = Number(header('content-length'));
     const size = Number.isFinite(length) && length > 0 ? length : null;
 
+    const referer = details.documentUrl ?? details.initiator ?? null;
     const kind = kindFromContentType(contentType) ?? kindFromUrl(details.url);
     if (!kind) {
       // Neither the type nor the URL said anything. If the type said *nothing
       // useful* rather than something unrelated, the body is worth a peek.
-      if (isAmbiguousContentType(contentType)) sniffForPlaylist(details.tabId, details.url, size);
+      if (isAmbiguousContentType(contentType)) {
+        sniffForPlaylist(tabId, details.url, size, referer);
+      }
       return;
     }
 
-    recordMedia(details.tabId, {
+    recordMedia(tabId, {
       url: details.url,
       kind,
       size,
       title: null,
-      referer: null,
+      referer,
       detectedAt: Date.now(),
       source: 'network',
     });
   },
-  { urls: ['<all_urls>'], types: ['xmlhttprequest', 'media', 'other', 'object'] },
+  { urls: ['<all_urls>'] },
   ['responseHeaders'],
 );
 
@@ -267,13 +374,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   mediaByTab.delete(tabId);
   knownPlaylistPrefixes.delete(tabId);
+  knownPlaylistEndpoints.delete(tabId);
 });
 
-chrome.tabs.onActivated.addListener(({ tabId }) => updateBadge(tabId));
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  activeTabId = tabId;
+  updateBadge(tabId);
+});
 
 function clearTab(tabId) {
   mediaByTab.delete(tabId);
   knownPlaylistPrefixes.delete(tabId);
+  knownPlaylistEndpoints.delete(tabId);
   // ponytail: cleared for every tab, not just this one. Costs at most one
   // repeat sniff after someone else navigates; key by tab if that ever shows.
   sniffed.clear();
@@ -303,12 +415,19 @@ async function hasOffscreenDocument() {
   return contexts.length > 0;
 }
 
+// An offscreen document alive when the worker boots belongs to a previous
+// worker life: its port died with that worker and it never reconnects, and
+// this worker has no record of its jobs. Close it so the next send recreates
+// a document that connects back.
+const orphanSweep = chrome.offscreen.closeDocument().catch(() => {});
+
 /**
  * Create the offscreen document if it is not already running. Concurrent
  * callers share one creation promise: `createDocument` throws if a document
  * already exists, and two downloads started together would race.
  */
 async function ensureOffscreenDocument() {
+  await orphanSweep;
   if (await hasOffscreenDocument()) return;
 
   if (!offscreenCreating) {
@@ -392,7 +511,12 @@ async function closeEngineIfIdle() {
  * @returns {Promise<number|null>} the rule id to remove later
  */
 async function addRefererRule(referer) {
-  if (!referer) return null;
+  let origin;
+  try {
+    origin = new URL(referer).origin;
+  } catch {
+    return null;
+  }
 
   const id = nextRuleId++;
   try {
@@ -403,7 +527,13 @@ async function addRefererRule(referer) {
           priority: 1,
           action: {
             type: 'modifyHeaders',
-            requestHeaders: [{ header: 'Referer', operation: 'set', value: referer }],
+            // Mirror what the page itself sends cross-origin: an origin-only
+            // Referer and its Origin. Without Origin the request carries
+            // chrome-extension://…, which CDNs like surrit.com answer with 403.
+            requestHeaders: [
+              { header: 'Referer', operation: 'set', value: `${origin}/` },
+              { header: 'Origin', operation: 'set', value: origin },
+            ],
           },
           condition: {
             resourceTypes: ['xmlhttprequest'],
@@ -417,6 +547,15 @@ async function addRefererRule(referer) {
     // Referer injection is best-effort; the download still gets a chance.
     return null;
   }
+}
+
+/** Referer rules held for an in-flight `probe`, keyed by job id. */
+const probeRules = new Map();
+
+async function dropProbeRule(jobId) {
+  const ruleId = probeRules.get(jobId);
+  probeRules.delete(jobId);
+  await removeRefererRule(ruleId);
 }
 
 async function removeRefererRule(ruleId) {
@@ -568,6 +707,11 @@ async function startDownload(request) {
   return jobId;
 }
 
+/**
+ * `chrome.downloads.download` resolves as soon as the transfer *starts*, so
+ * the job stays in flight until `onChanged` reports a terminal state. Marking
+ * it done here would report 100% instantly for a file of any size.
+ */
 async function startDirectDownload({ url, kind, jobId, name, settings, referer }) {
   const ruleId = settings.sendReferer ? await addRefererRule(referer) : null;
   const extension = OUTPUT_EXTENSION[kind] ?? 'mp4';
@@ -587,24 +731,55 @@ async function startDirectDownload({ url, kind, jobId, name, settings, referer }
       filename: buildDownloadPath(settings.subfolder, name, extension),
       saveAs: settings.saveAs,
     });
-    updateJob(jobId, { state: JobState.DONE, downloadId, finishedAt: Date.now() });
-    await addHistoryEntry({
-      id: jobId,
-      name: `${name}.${extension}`,
-      url,
-      kind,
-      downloadId,
-      bytes: null,
-      finishedAt: Date.now(),
-      partial: false,
-    });
+    directJobs.set(downloadId, { jobId, name, url, kind, extension });
+    updateJob(jobId, { downloadId });
   } catch (error) {
     updateJob(jobId, { state: JobState.FAILED, error: error.message });
-  } finally {
     await removeRefererRule(ruleId);
   }
 
   return jobId;
+}
+
+/** Direct downloads Chrome is still writing: `downloadId -> job details`. */
+const directJobs = new Map();
+
+/** Settle a direct download once Chrome reports it finished or gave up. */
+async function finishDirectDownload(delta) {
+  const entry = directJobs.get(delta.id);
+  if (!entry) return;
+
+  const state = delta.state?.current;
+  if (state !== 'complete' && state !== 'interrupted') return;
+  directJobs.delete(delta.id);
+
+  const job = jobs.get(entry.jobId);
+  await removeRefererRule(job?.ruleId);
+
+  if (state === 'interrupted') {
+    updateJob(entry.jobId, {
+      state: JobState.FAILED,
+      error: delta.error?.current ?? 'The download was interrupted',
+    });
+    return;
+  }
+
+  // `fileSize` is the bytes actually written; `totalBytes` may be unknown for
+  // a chunked response, so the real size is worth reading back either way.
+  const [record] = await chrome.downloads.search({ id: delta.id }).catch(() => []);
+  const bytes = record?.fileSize || delta.fileSize?.current || null;
+
+  updateJob(entry.jobId, { state: JobState.DONE, bytes, finishedAt: Date.now() });
+  await addHistoryEntry({
+    id: entry.jobId,
+    name: `${entry.name}.${entry.extension}`,
+    url: entry.url,
+    kind: entry.kind,
+    downloadId: delta.id,
+    bytes,
+    finishedAt: Date.now(),
+    partial: false,
+  });
 }
 
 /**
@@ -614,7 +789,9 @@ async function startDirectDownload({ url, kind, jobId, name, settings, referer }
 async function saveAssembledFile(payload) {
   const settings = await getSettings();
   const job = jobs.get(payload.jobId) ?? {};
-  const extension = OUTPUT_EXTENSION[MediaKind.HLS];
+  // The engine names the container when it knows it: a muxed stream lands as
+  // MP4, not as the raw transport stream the HLS default assumes.
+  const extension = payload.extension ?? OUTPUT_EXTENSION[MediaKind.HLS];
 
   updateJob(payload.jobId, { state: JobState.SAVING });
 
@@ -636,6 +813,25 @@ async function saveAssembledFile(payload) {
       finishedAt: Date.now(),
     });
 
+    // A stream whose audio is a separate rendition produces a second file.
+    // Muxing needs a demuxer/remuxer this extension does not carry, so both
+    // land on disk rather than one of them being silently dropped.
+    let audioName = null;
+    if (payload.audio) {
+      audioName = `${payload.name}.audio`;
+      const audioDownloadId = await chrome.downloads.download({
+        url: payload.audio.objectUrl,
+        filename: buildDownloadPath(settings.subfolder, audioName, payload.audio.extension),
+        saveAs: settings.saveAs,
+      });
+      pendingObjectUrls.set(audioDownloadId, {
+        jobId: payload.jobId,
+        objectUrl: payload.audio.objectUrl,
+      });
+      audioName = `${audioName}.${payload.audio.extension}`;
+      updateJob(payload.jobId, { audioName, audioBytes: payload.audio.bytes });
+    }
+
     await addHistoryEntry({
       id: payload.jobId,
       name: `${payload.name}.${extension}`,
@@ -646,17 +842,23 @@ async function saveAssembledFile(payload) {
       finishedAt: Date.now(),
       partial: (payload.missing?.length ?? 0) > 0,
       missingCount: payload.missing?.length ?? 0,
+      audioName,
     });
   } catch (error) {
     updateJob(payload.jobId, { state: JobState.FAILED, error: error.message });
     enginePort?.postMessage({ type: 'release', objectUrl: payload.objectUrl });
+    if (payload.audio) {
+      enginePort?.postMessage({ type: 'release', objectUrl: payload.audio.objectUrl });
+    }
   } finally {
     await removeRefererRule(job.ruleId);
   }
 }
 
-/** Revoke the object URL once Chrome has finished writing the file. */
+/** Settle direct downloads, and revoke object URLs Chrome is done with. */
 chrome.downloads.onChanged.addListener(async (delta) => {
+  await finishDirectDownload(delta);
+
   const pending = pendingObjectUrls.get(delta.id);
   if (!pending) return;
   const finished = delta.state?.current === 'complete' || delta.state?.current === 'interrupted';
@@ -671,6 +873,12 @@ async function cancelJob(jobId) {
   const job = jobs.get(jobId);
   updateJob(jobId, { state: JobState.CANCELLED });
   enginePort?.postMessage({ type: 'cancel', jobId });
+
+  // A direct download lives in Chrome, not in the engine, so it needs telling.
+  if (job?.downloadId != null && directJobs.delete(job.downloadId)) {
+    await chrome.downloads.cancel(job.downloadId).catch(() => {});
+  }
+
   await removeRefererRule(job?.ruleId);
   await closeEngineIfIdle();
 }
@@ -731,6 +939,7 @@ async function handleEngineMessage(message) {
     }
 
     case 'variants':
+      await dropProbeRule(message.jobId);
       updateJob(message.jobId, { state: JobState.PROBING, variants: message.variants });
       broadcastToPanels({ type: 'variants', jobId: message.jobId, variants: message.variants });
       break;
@@ -741,6 +950,7 @@ async function handleEngineMessage(message) {
 
     case 'failed': {
       const job = jobs.get(message.jobId);
+      await dropProbeRule(message.jobId);
       updateJob(message.jobId, { state: JobState.FAILED, error: message.error });
       await removeRefererRule(job?.ruleId);
       await closeEngineIfIdle();
@@ -776,16 +986,24 @@ async function handlePanelMessage(message, port) {
       await startDownload(message.request);
       break;
 
-    case 'probe':
+    case 'probe': {
       // Ask the engine for the variant list without committing to a download.
+      // The master playlist is gated like the segments, so it gets the page's
+      // headers too; the rule is dropped when the engine answers.
+      const { sendReferer } = await getSettings();
+      const ruleId = sendReferer ? await addRefererRule(message.referer) : null;
+      if (ruleId != null) probeRules.set(message.jobId, ruleId);
       try {
         await sendToEngine({ type: 'probe', jobId: message.jobId, url: message.url });
       } catch (error) {
+        await dropProbeRule(message.jobId);
         port.postMessage({ type: 'probe-failed', jobId: message.jobId, error: error.message });
       }
       break;
+    }
 
     case 'cancel':
+      await dropProbeRule(message.jobId);
       await cancelJob(message.jobId);
       break;
 

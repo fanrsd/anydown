@@ -11,6 +11,7 @@ import {
   isPlaylist,
   pickVariant,
   describeVariant,
+  separateAudioUri,
 } from '../lib/m3u8-parser.js';
 
 const BASE = 'https://cdn.example.com/videos/show/index.m3u8';
@@ -22,6 +23,63 @@ test('parseAttributes keeps commas inside quoted values', () => {
   assert.equal(attributes.BANDWIDTH, '1280000');
   assert.equal(attributes.CODECS, 'avc1.4d401f,mp4a.40.2');
   assert.equal(attributes.RESOLUTION, '1280x720');
+});
+
+/*
+ * Audio lives in one of two places, and telling them apart decides whether the
+ * saved file has sound. A rendition with a URI is a second stream that must be
+ * fetched; the same tag without one only names audio already inside the video
+ * segments, and fetching nothing extra is correct there.
+ */
+test('a rendition with its own URI is a stream that must be fetched', () => {
+  const master = parseMasterPlaylist(
+    [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="aac"',
+      'video/1080.m3u8',
+    ].join('\n'),
+    BASE,
+  );
+
+  assert.equal(
+    separateAudioUri(master, master.variants[0]),
+    'https://cdn.example.com/videos/show/audio/en.m3u8',
+  );
+});
+
+test('a rendition without a URI means the audio is already in the video', () => {
+  const master = parseMasterPlaylist(
+    [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="English",DEFAULT=YES',
+      '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="aac"',
+      'video/1080.m3u8',
+    ].join('\n'),
+    BASE,
+  );
+
+  assert.equal(separateAudioUri(master, master.variants[0]), null);
+});
+
+test('the default rendition wins, and a variant naming no group needs nothing', () => {
+  const master = parseMasterPlaylist(
+    [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="Japanese",URI="audio/ja.m3u8"',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="other",NAME="Unused",URI="audio/no.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="aac"',
+      'video/1080.m3u8',
+      '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360',
+      'video/360.m3u8',
+    ].join('\n'),
+    BASE,
+  );
+
+  const [best, plain] = master.variants;
+  assert.equal(separateAudioUri(master, best), 'https://cdn.example.com/videos/show/audio/en.m3u8');
+  assert.equal(separateAudioUri(master, plain), null);
 });
 
 test('parseAttributes handles quoted URIs containing query strings', () => {

@@ -11,6 +11,12 @@
       segment pool and the final Blob assembly have to live somewhere with a
       full DOM environment and a longer lifetime.
     -->
+    <!--
+      mp4box.js, loaded as a classic script so its UMD build attaches to the
+      global before the module runs. It is only reached when a stream carries
+      its audio as a separate rendition and both sides are fragmented MP4.
+    -->
+    <script src="../vendor/mp4box.js"></script>
     <script type="module" src="offscreen.js"></script>
   </body>
 </html>

@@ -34,6 +34,10 @@ analytics, and no network traffic beyond the media you ask it to download.
 The panel is a view, not the download itself: closing it does not stop
 anything, and reopening it shows the current state.
 
+MissAV pages (`missav.ws`, `missav.ai`, `missav123.com` and siblings) are the
+one exception to step 1: the stream's id is read from the page script, so the
+playlist is listed before you press play.
+
 ### The segment ribbon
 
 An HLS stream is not one file. It is thousands of small segments that have to
