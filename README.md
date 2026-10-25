@@ -1,3 +1,7 @@
+<div align="center">
+  <img src=".github/assets/banner.svg" alt="anydown — Finds the video on a page and saves it as one file." width="100%">
+</div>
+
 # AnyDown
 
 A Chrome/Edge extension that finds the video on a page and saves it as one file.
