@@ -138,3 +138,7 @@ It is a development harness, not part of the extension: nothing in
 
 The design document is at
 [`docs/plans/2026-08-11-anydown-design.md`](docs/plans/2026-08-11-anydown-design.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
